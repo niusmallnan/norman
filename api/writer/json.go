@@ -48,6 +48,10 @@ func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, versi
 		output = j.convert(builder, apiContext, v)
 	case types.RawResource:
 		output = v
+	case *types.RawResource: // PANDARIA: add for responseControl Filter
+		output = v
+	case *types.GenericCollection: // PANDARIA: add for responseControl Filter
+		output = v
 	}
 
 	if output != nil {

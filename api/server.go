@@ -35,6 +35,7 @@ type Server struct {
 	URLParser                   parse.URLParser
 	Defaults                    Defaults
 	AccessControl               types.AccessControl
+	ResponseControl             types.PandariaResponseControl // PANDARIA
 }
 
 type Defaults struct {
@@ -106,6 +107,9 @@ func (s *Server) parser(rw http.ResponseWriter, req *http.Request) (*types.APICo
 	}
 
 	ctx.AccessControl = s.AccessControl
+
+	// PANDARIA: add pandaria response control
+	ctx.ResponseControl = s.ResponseControl
 
 	return ctx, err
 }
