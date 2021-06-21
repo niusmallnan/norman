@@ -4,6 +4,7 @@ import (
 	"context"
 	ejson "encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/rancher/norman/types/convert/merge"
 	"github.com/rancher/norman/types/values"
 	"github.com/sirupsen/logrus"
+	"github.com/tcnksm/go-httpstat"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -135,7 +137,19 @@ func (s *Store) doAuthed(apiContext *types.APIContext, request *rest.Request) re
 	for _, header := range authHeaders {
 		request.SetHeader(header, apiContext.Request.Header[http.CanonicalHeaderKey(header)]...)
 	}
-	return request.Do(apiContext.Request.Context())
+	enableTrace := strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
+		strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
+	httpstatResult := &httpstat.Result{}
+	reqCtx := apiContext.Request.Context()
+	if enableTrace {
+		reqCtx = httpstat.WithHTTPStat(apiContext.Request.Context(), httpstatResult)
+	}
+	result := request.Do(reqCtx)
+	if enableTrace {
+		httpstatResult.End(time.Now())
+		logrus.Tracef("SingleResult httpstat: %+v", httpstatResult)
+	}
+	return result
 }
 
 func (s *Store) k8sClient(apiContext *types.APIContext) (rest.Interface, error) {
@@ -264,7 +278,18 @@ func (s *Store) retryList(namespace string, apiContext *types.APIContext) (*unst
 		req := s.common(namespace, k8sClient.Get())
 		start := time.Now()
 		resultList = &unstructured.UnstructuredList{}
-		err = req.Do(apiContext.Request.Context()).Into(resultList)
+		enableTrace := strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
+			strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
+		reqCtx := apiContext.Request.Context()
+		result := &httpstat.Result{}
+		if enableTrace {
+			reqCtx = httpstat.WithHTTPStat(apiContext.Request.Context(), result)
+		}
+		err = req.Do(reqCtx).Into(resultList)
+		if enableTrace {
+			result.End(time.Now())
+			logrus.Tracef("LIST httpstat: %+v", result)
+		}
 		logrus.Tracef("LIST: %v, %v", time.Now().Sub(start), s.resourcePlural)
 		if err != nil {
 			if i < 2 && strings.Contains(err.Error(), "Client.Timeout exceeded") {
