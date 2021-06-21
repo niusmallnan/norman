@@ -15,6 +15,7 @@ require (
 	github.com/rancher/wrangler v0.6.2-0.20200820173016-2068de651106
 	github.com/sirupsen/logrus v1.4.2
 	github.com/stretchr/testify v1.4.0
+	github.com/tcnksm/go-httpstat v0.2.0
 	golang.org/x/sync v0.0.0-20200625203802-6e8e738ad208
 	golang.org/x/tools v0.0.0-20190920225731-5eefd052ad72
 	google.golang.org/appengine v1.6.1 // indirect
