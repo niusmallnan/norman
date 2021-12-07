@@ -4,17 +4,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/parse/builder"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/definition"
 	"github.com/sirupsen/logrus"
+	"k8s.io/utils/trace"
 )
 
 type EncodingResponseWriter struct {
 	ContentType string
-	Encoder     func(io.Writer, interface{}) error
+	Encoder     func(io.Writer, interface{}, bool) error
 }
 
 func (j *EncodingResponseWriter) start(apiContext *types.APIContext, code int, obj interface{}) {
@@ -34,6 +36,14 @@ func (j *EncodingResponseWriter) Body(apiContext *types.APIContext, writer io.Wr
 }
 
 func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, version *types.APIVersion, writer io.Writer, obj interface{}) error {
+	enableTrace := parse.NeedForceTrace(apiContext)
+	listTrace := trace.New("EncodingResponse",
+		trace.Field{Key: "url", Value: apiContext.Request.URL.String()},
+		trace.Field{Key: "method", Value: apiContext.Request.Method})
+	if enableTrace {
+		defer listTrace.Log()
+	}
+
 	var output interface{}
 
 	builder := builder.NewBuilder(apiContext)
@@ -54,13 +64,18 @@ func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, versi
 		output = v
 	}
 
+	listTrace.Step("Completed Internal Objects")
+
 	if output != nil {
-		return j.Encoder(writer, output)
+		return j.Encoder(writer, output, parse.NeedPower(apiContext))
 	}
 
 	return nil
 }
 func (j *EncodingResponseWriter) writeMapSlice(builder *builder.Builder, apiContext *types.APIContext, input []map[string]interface{}) *types.GenericCollection {
+	if parse.NeedPower(apiContext) {
+		return j.powerWriteMapSlice(builder, apiContext, input)
+	}
 	collection := newCollection(apiContext)
 	for _, value := range input {
 		converted := j.convert(builder, apiContext, value)
@@ -77,6 +92,9 @@ func (j *EncodingResponseWriter) writeMapSlice(builder *builder.Builder, apiCont
 }
 
 func (j *EncodingResponseWriter) writeInterfaceSlice(builder *builder.Builder, apiContext *types.APIContext, input []interface{}) *types.GenericCollection {
+	if parse.NeedPower(apiContext) {
+		return j.powerWriteInterfaceSlice(builder, apiContext, input)
+	}
 	collection := newCollection(apiContext)
 	for _, value := range input {
 		switch v := value.(type) {
@@ -235,4 +253,69 @@ func newCollection(apiContext *types.APIContext) *types.GenericCollection {
 	}
 
 	return result
+}
+
+func (j *EncodingResponseWriter) powerWriteMapSlice(builder *builder.Builder, apiContext *types.APIContext, input []map[string]interface{}) *types.GenericCollection {
+	var (
+		convertWait   sync.WaitGroup
+		convertedList = make([]interface{}, len(input))
+	)
+
+	collection := newCollection(apiContext)
+	for index, value := range input {
+		// indexing converted values to maintain order
+		convertWait.Add(1)
+		go func(i int, val map[string]interface{}) {
+			converted := j.convert(builder, apiContext, val)
+			if converted != nil {
+				convertedList[i] = converted
+			}
+			convertWait.Done()
+		}(index, value)
+	}
+	convertWait.Wait()
+
+	for _, val := range convertedList {
+		collection.Data = append(collection.Data, val)
+	}
+	if apiContext.Schema.CollectionFormatter != nil {
+		apiContext.Schema.CollectionFormatter(apiContext, collection)
+	}
+
+	return collection
+}
+
+func (j *EncodingResponseWriter) powerWriteInterfaceSlice(builder *builder.Builder, apiContext *types.APIContext, input []interface{}) *types.GenericCollection {
+	var (
+		convertWait   sync.WaitGroup
+		convertedList = make([]interface{}, len(input))
+	)
+
+	collection := newCollection(apiContext)
+	for index, value := range input {
+		convertWait.Add(1)
+		go func(i int, val interface{}) {
+			switch v := val.(type) {
+			case map[string]interface{}:
+				converted := j.convert(builder, apiContext, v)
+				if converted != nil {
+					convertedList[i] = converted
+				}
+			default:
+				convertedList[i] = v
+			}
+			convertWait.Done()
+		}(index, value)
+	}
+	convertWait.Wait()
+
+	for _, val := range convertedList {
+		collection.Data = append(collection.Data, val)
+	}
+
+	if apiContext.Schema.CollectionFormatter != nil {
+		apiContext.Schema.CollectionFormatter(apiContext, collection)
+	}
+
+	return collection
 }

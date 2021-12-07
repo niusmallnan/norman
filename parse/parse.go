@@ -3,6 +3,7 @@ package parse
 import (
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -21,9 +22,10 @@ const (
 var (
 	multiSlashRegexp = regexp.MustCompile("//+")
 	allowedFormats   = map[string]bool{
-		"html": true,
-		"json": true,
-		"yaml": true,
+		"html":  true,
+		"json":  true,
+		"jsonl": true,
+		"yaml":  true,
 	}
 )
 
@@ -270,11 +272,20 @@ func parseResponseFormat(req *http.Request) string {
 	if isYaml(req) {
 		return "yaml"
 	}
+
+	if isJSONL(req) {
+		return "jsonl"
+	}
+
 	return "json"
 }
 
 func isYaml(req *http.Request) bool {
 	return strings.Contains(req.Header.Get("Accept"), "application/yaml")
+}
+
+func isJSONL(req *http.Request) bool {
+	return strings.Contains(req.Header.Get("Accept"), "application/jsonl")
 }
 
 func parseMethod(req *http.Request) string {
@@ -313,4 +324,17 @@ func valuesToBody(input map[string][]string) map[string]interface{} {
 		result[k] = v
 	}
 	return result
+}
+
+func NeedForceTrace(apiContext *types.APIContext) bool {
+	return strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
+		strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
+}
+
+func NeedPower(apiContext *types.APIContext) bool {
+	return strings.EqualFold(apiContext.Option("power"), "true")
+}
+
+func NeedRawQuery(apiContext *types.APIContext) bool {
+	return strings.EqualFold(apiContext.Option("raw_query"), "true")
 }

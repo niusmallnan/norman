@@ -57,6 +57,10 @@ func NewAPIServer() *Server {
 				ContentType: "application/json",
 				Encoder:     types.JSONEncoder,
 			},
+			"jsonl": &writer.EncodingResponseWriter{
+				ContentType: "application/jsonl",
+				Encoder:     types.JSONLinesEncoder,
+			},
 			"html": &writer.HTMLResponseWriter{
 				EncodingResponseWriter: writer.EncodingResponseWriter{
 					Encoder:     types.JSONEncoder,

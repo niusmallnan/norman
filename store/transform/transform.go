@@ -2,10 +2,14 @@ package transform
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/rancher/norman/httperror"
+	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
+	"golang.org/x/sync/errgroup"
+	"k8s.io/utils/trace"
 )
 
 type TransformerFunc func(apiContext *types.APIContext, schema *types.Schema, data map[string]interface{}, opt *types.QueryOptions) (map[string]interface{}, error)
@@ -64,14 +68,24 @@ func (s *Store) Watch(apiContext *types.APIContext, schema *types.Schema, opt *t
 }
 
 func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *types.QueryOptions) ([]map[string]interface{}, error) {
+	if parse.NeedPower(apiContext) {
+		return s.powerList(apiContext, schema, opt)
+	}
+
 	data, err := s.Store.List(apiContext, schema, opt)
 	if err != nil {
 		return nil, err
 	}
 
+	listTrace := trace.New("TransformStore List", trace.Field{Key: "resource", Value: schema.PluralName})
+	if parse.NeedForceTrace(apiContext) {
+		defer listTrace.Log()
+	}
+
 	if s.ListTransformer != nil {
 		return s.ListTransformer(apiContext, schema, data, opt)
 	}
+	listTrace.Step("Completed ListTransformer")
 
 	if s.Transformer == nil {
 		return data, nil
@@ -87,6 +101,7 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 			result = append(result, item)
 		}
 	}
+	listTrace.Step("Completed Result Transformer")
 
 	return result, nil
 }
@@ -119,4 +134,54 @@ func (s *Store) Delete(apiContext *types.APIContext, schema *types.Schema, id st
 		return obj, err
 	}
 	return s.Transformer(apiContext, schema, obj, nil)
+}
+
+func (s *Store) powerList(apiContext *types.APIContext, schema *types.Schema, opt *types.QueryOptions) ([]map[string]interface{}, error) {
+	data, err := s.Store.List(apiContext, schema, opt)
+	if err != nil {
+		return nil, err
+	}
+
+	listTrace := trace.New("TransformStore List", trace.Field{Key: "resource", Value: schema.PluralName})
+	if parse.NeedForceTrace(apiContext) {
+		defer listTrace.Log()
+	}
+
+	if s.ListTransformer != nil {
+		return s.ListTransformer(apiContext, schema, data, opt)
+	}
+	listTrace.Step("Completed ListTransformer")
+
+	if s.Transformer == nil {
+		return data, nil
+	}
+
+	var (
+		m      sync.Mutex
+		result []map[string]interface{}
+	)
+	eg, _ := errgroup.WithContext(apiContext.Request.Context())
+
+	for _, item := range data {
+		itemCopy := item
+		eg.Go(func() error {
+			val, err := s.Transformer(apiContext, schema, itemCopy, opt)
+			if err != nil {
+				return err
+			}
+			if val != nil {
+				m.Lock()
+				result = append(result, val)
+				m.Unlock()
+			}
+			return nil
+		})
+	}
+	err = eg.Wait()
+	if err != nil {
+		return nil, err
+	}
+	listTrace.Step("Completed Result Transformer")
+
+	return result, nil
 }

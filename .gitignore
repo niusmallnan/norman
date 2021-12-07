@@ -5,3 +5,6 @@
 *.swp
 /.trash-cache
 /trash.lock
+.cache/
+.bash_history
+

@@ -45,7 +45,7 @@ func (f *Factory) BatchWait() error {
 	return f.eg.Wait()
 }
 
-func (f *Factory) BatchCreateCRDs(ctx context.Context, storageContext types.StorageContext, schemas *types.Schemas, version *types.APIVersion, schemaIDs ...string) {
+func (f *Factory) BatchCreateCRDs(ctx context.Context, storageContext types.StorageContext, typer proxy.StoreTyper, schemas *types.Schemas, version *types.APIVersion, schemaIDs ...string) {
 	f.eg.Go(func() error {
 		var schemasToCreate []*types.Schema
 
@@ -57,7 +57,7 @@ func (f *Factory) BatchCreateCRDs(ctx context.Context, storageContext types.Stor
 			schemasToCreate = append(schemasToCreate, s)
 		}
 
-		err := f.AssignStores(ctx, storageContext, schemasToCreate...)
+		err := f.AssignStores(ctx, storageContext, typer, schemasToCreate...)
 		if err != nil {
 			return fmt.Errorf("creating CRD store %v", err)
 		}
@@ -66,7 +66,7 @@ func (f *Factory) BatchCreateCRDs(ctx context.Context, storageContext types.Stor
 	})
 }
 
-func (f *Factory) AssignStores(ctx context.Context, storageContext types.StorageContext, schemas ...*types.Schema) error {
+func (f *Factory) AssignStores(ctx context.Context, storageContext types.StorageContext, typer proxy.StoreTyper, schemas ...*types.Schema) error {
 	schemaStatus, err := f.CreateCRDs(ctx, storageContext, schemas...)
 	if err != nil {
 		return err
@@ -80,6 +80,7 @@ func (f *Factory) AssignStores(ctx context.Context, storageContext types.Storage
 
 		schema.Store = proxy.NewProxyStore(ctx, f.ClientGetter,
 			storageContext,
+			typer,
 			[]string{"apis"},
 			crd.Spec.Group,
 			crd.Spec.Version,
