@@ -221,11 +221,14 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 	result := []map[string]interface{}{}
 
 	listTrace := trace.New("ProxyStore List", trace.Field{Key: "resource", Value: s.resourcePlural})
-	defer listTrace.LogIfLong(10 * time.Second)
+	enableTrace := parse.NeedForceTrace(apiContext)
+	if logrus.IsLevelEnabled(logrus.TraceLevel) || enableTrace {
+		defer listTrace.Log()
+	}
 	// if there are no namespaces field in options, a single request is made
 	if opt == nil || opt.Namespaces == nil {
 		ns := getNamespace(apiContext, opt)
-		resultList := s.getListStruct()
+		resultList := s.getListStruct(enableTrace)
 
 		err := s.retryList(ns, apiContext, resultList)
 		if err != nil {
@@ -243,7 +246,7 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 		for _, ns := range allNS {
 			nsCopy := ns
 			errGroup.Go(func() error {
-				resultList := s.getListStruct()
+				resultList := s.getListStruct(enableTrace)
 
 				err := s.retryList(nsCopy, apiContext, resultList)
 				if err != nil {
@@ -271,10 +274,6 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 
 	listTrace.Step("Completed FilterList")
 
-	enableTrace := parse.NeedForceTrace(apiContext)
-	if logrus.IsLevelEnabled(logrus.TraceLevel) || enableTrace {
-		listTrace.Log()
-	}
 	return filtered, nil
 }
 
@@ -627,7 +626,7 @@ func (s *Store) fromInternal(apiContext *types.APIContext, schema *types.Schema,
 
 // getListStruct returns a runtime object for storing results from list requests.  If the Store's scheme does not return
 // a type for the resource associated with the store, a generic type will be used.
-func (s *Store) getListStruct() runtime.Object {
+func (s *Store) getListStruct(verbose bool) runtime.Object {
 	// try to find the list type for this store
 	obj, err := s.typer.New(schema.GroupVersionKind{
 		Group:   s.group,
@@ -636,7 +635,9 @@ func (s *Store) getListStruct() runtime.Object {
 	})
 	// if we cannot get the specific type default to a generic parser
 	if err != nil {
-		logrus.Infof("Falling back to generic list type for [%s]: %v", s.kind, err)
+		if verbose {
+			logrus.Infof("Falling back to generic list type for [%sList]: %v", s.kind, err)
+		}
 		return new(unstructured.UnstructuredList)
 	}
 
