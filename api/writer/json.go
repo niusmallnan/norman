@@ -11,6 +11,7 @@ import (
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/definition"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/utils/trace"
 )
 
@@ -51,8 +52,14 @@ func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, versi
 
 	switch v := obj.(type) {
 	case []interface{}:
+		if enableTrace {
+			logrus.Infof("EncodingResponse objects len: %d", len(v))
+		}
 		output = j.writeInterfaceSlice(builder, apiContext, v)
 	case []map[string]interface{}:
+		if enableTrace {
+			logrus.Infof("EncodingResponse objects len: %d", len(v))
+		}
 		output = j.writeMapSlice(builder, apiContext, v)
 	case map[string]interface{}:
 		output = j.convert(builder, apiContext, v)
@@ -64,7 +71,12 @@ func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, versi
 		output = v
 	}
 
-	listTrace.Step("Completed Internal Objects")
+	switch v := output.(type) {
+	case *types.GenericCollection:
+		listTrace.Step("Completed Internal Objects", trace.Field{Key: "list-len", Value: len(v.Data)})
+	default:
+		listTrace.Step("Completed Internal Objects")
+	}
 
 	if output != nil {
 		return j.Encoder(writer, output, parse.NeedPower(apiContext))
@@ -72,6 +84,7 @@ func (j *EncodingResponseWriter) VersionBody(apiContext *types.APIContext, versi
 
 	return nil
 }
+
 func (j *EncodingResponseWriter) writeMapSlice(builder *builder.Builder, apiContext *types.APIContext, input []map[string]interface{}) *types.GenericCollection {
 	if parse.NeedPower(apiContext) {
 		return j.powerWriteMapSlice(builder, apiContext, input)
@@ -256,28 +269,26 @@ func newCollection(apiContext *types.APIContext) *types.GenericCollection {
 }
 
 func (j *EncodingResponseWriter) powerWriteMapSlice(builder *builder.Builder, apiContext *types.APIContext, input []map[string]interface{}) *types.GenericCollection {
-	var (
-		convertWait   sync.WaitGroup
-		convertedList = make([]interface{}, len(input))
-	)
+	var mux sync.Mutex
+	errGroup, _ := errgroup.WithContext(apiContext.Request.Context())
 
 	collection := newCollection(apiContext)
-	for index, value := range input {
-		// indexing converted values to maintain order
-		convertWait.Add(1)
-		go func(i int, val map[string]interface{}) {
-			converted := j.convert(builder, apiContext, val)
+	for _, val := range input {
+		valCopy := val
+		errGroup.Go(func() error {
+			converted := j.convert(builder, apiContext, valCopy)
 			if converted != nil {
-				convertedList[i] = converted
+				mux.Lock()
+				collection.Data = append(collection.Data, converted)
+				mux.Unlock()
 			}
-			convertWait.Done()
-		}(index, value)
+			return nil
+		})
 	}
-	convertWait.Wait()
+	if err := errGroup.Wait(); err != nil {
+		return collection
+	}
 
-	for _, val := range convertedList {
-		collection.Data = append(collection.Data, val)
-	}
 	if apiContext.Schema.CollectionFormatter != nil {
 		apiContext.Schema.CollectionFormatter(apiContext, collection)
 	}
@@ -286,31 +297,31 @@ func (j *EncodingResponseWriter) powerWriteMapSlice(builder *builder.Builder, ap
 }
 
 func (j *EncodingResponseWriter) powerWriteInterfaceSlice(builder *builder.Builder, apiContext *types.APIContext, input []interface{}) *types.GenericCollection {
-	var (
-		convertWait   sync.WaitGroup
-		convertedList = make([]interface{}, len(input))
-	)
+	var mux sync.Mutex
+	errGroup, _ := errgroup.WithContext(apiContext.Request.Context())
 
 	collection := newCollection(apiContext)
-	for index, value := range input {
-		convertWait.Add(1)
-		go func(i int, val interface{}) {
-			switch v := val.(type) {
+	for _, val := range input {
+		valCopy := val
+		errGroup.Go(func() error {
+			switch v := valCopy.(type) {
 			case map[string]interface{}:
 				converted := j.convert(builder, apiContext, v)
 				if converted != nil {
-					convertedList[i] = converted
+					mux.Lock()
+					collection.Data = append(collection.Data, converted)
+					mux.Unlock()
 				}
 			default:
-				convertedList[i] = v
+				mux.Lock()
+				collection.Data = append(collection.Data, v)
+				mux.Unlock()
 			}
-			convertWait.Done()
-		}(index, value)
+			return nil
+		})
 	}
-	convertWait.Wait()
-
-	for _, val := range convertedList {
-		collection.Data = append(collection.Data, val)
+	if err := errGroup.Wait(); err != nil {
+		return collection
 	}
 
 	if apiContext.Schema.CollectionFormatter != nil {

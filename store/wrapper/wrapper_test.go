@@ -1,6 +1,7 @@
 package wrapper
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/rancher/norman/api/handler"
@@ -26,10 +27,12 @@ func TestWrap(t *testing.T) {
 			Limit: &limit,
 		},
 	}
+	req, _ := http.NewRequest(http.MethodGet, "", nil)
 	apiContext := &types.APIContext{
 		SubContextAttributeProvider: &parse.DefaultSubContextAttributeProvider{},
 		QueryFilter:                 handler.QueryFilter,
 		Pagination:                  opt.Pagination,
+		Request:                     req,
 	}
 
 	wrapped := Wrap(store)

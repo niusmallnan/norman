@@ -82,16 +82,18 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 		defer listTrace.Log()
 	}
 
+	var result []map[string]interface{}
+
 	if s.ListTransformer != nil {
-		return s.ListTransformer(apiContext, schema, data, opt)
+		result, err = s.ListTransformer(apiContext, schema, data, opt)
+		listTrace.Step("Completed ListTransformer", trace.Field{Key: "list-len", Value: len(result)})
+		return result, err
 	}
-	listTrace.Step("Completed ListTransformer")
 
 	if s.Transformer == nil {
 		return data, nil
 	}
 
-	var result []map[string]interface{}
 	for _, item := range data {
 		item, err := s.Transformer(apiContext, schema, item, opt)
 		if err != nil {
@@ -101,7 +103,7 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 			result = append(result, item)
 		}
 	}
-	listTrace.Step("Completed Result Transformer")
+	listTrace.Step("Completed Result Transformer", trace.Field{Key: "list-len", Value: len(result)})
 
 	return result, nil
 }
@@ -147,19 +149,19 @@ func (s *Store) powerList(apiContext *types.APIContext, schema *types.Schema, op
 		defer listTrace.Log()
 	}
 
+	var result []map[string]interface{}
+
 	if s.ListTransformer != nil {
-		return s.ListTransformer(apiContext, schema, data, opt)
+		result, err = s.ListTransformer(apiContext, schema, data, opt)
+		listTrace.Step("Completed ListTransformer", trace.Field{Key: "list-len", Value: len(result)})
+		return result, err
 	}
-	listTrace.Step("Completed ListTransformer")
 
 	if s.Transformer == nil {
 		return data, nil
 	}
 
-	var (
-		m      sync.Mutex
-		result []map[string]interface{}
-	)
+	var m sync.Mutex
 	eg, _ := errgroup.WithContext(apiContext.Request.Context())
 
 	for _, item := range data {
@@ -181,7 +183,7 @@ func (s *Store) powerList(apiContext *types.APIContext, schema *types.Schema, op
 	if err != nil {
 		return nil, err
 	}
-	listTrace.Step("Completed Result Transformer")
+	listTrace.Step("Completed Result Transformer", trace.Field{Key: "list-len", Value: len(result)})
 
 	return result, nil
 }
