@@ -327,8 +327,9 @@ func valuesToBody(input map[string][]string) map[string]interface{} {
 }
 
 func NeedForceTrace(apiContext *types.APIContext) bool {
-	return strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
-		strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
+	return strings.EqualFold(apiContext.Option("httptrace"), "true") ||
+		strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true") ||
+		strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true")
 }
 
 func NeedPower(apiContext *types.APIContext) bool {
@@ -337,4 +338,8 @@ func NeedPower(apiContext *types.APIContext) bool {
 
 func NeedRawQuery(apiContext *types.APIContext) bool {
 	return strings.EqualFold(apiContext.Option("raw_query"), "true")
+}
+
+func DisabledTyper() bool {
+	return strings.EqualFold(os.Getenv("PANDARIA_NORMAN_DISABLE_TYPER"), "true")
 }

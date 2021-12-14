@@ -627,6 +627,13 @@ func (s *Store) fromInternal(apiContext *types.APIContext, schema *types.Schema,
 // getListStruct returns a runtime object for storing results from list requests.  If the Store's scheme does not return
 // a type for the resource associated with the store, a generic type will be used.
 func (s *Store) getListStruct(verbose bool) runtime.Object {
+	if parse.DisabledTyper() {
+		if verbose {
+			logrus.Infof("Disable typer as PANDARIA_NORMAN_DISABLE_TYPER=true [%sList]", s.kind)
+		}
+		return new(unstructured.UnstructuredList)
+	}
+
 	// try to find the list type for this store
 	obj, err := s.typer.New(schema.GroupVersionKind{
 		Group:   s.group,
