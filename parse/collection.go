@@ -10,7 +10,7 @@ import (
 
 var (
 	defaultLimit = int64(1000)
-	maxLimit     = int64(10000)
+	maxLimit     = int64(100000)
 )
 
 func QueryOptions(apiContext *types.APIContext, schema *types.Schema) types.QueryOptions {

@@ -2,8 +2,10 @@ package wrapper
 
 import (
 	"github.com/rancher/norman/httperror"
+	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/types"
 	"github.com/rancher/norman/types/convert"
+	"k8s.io/utils/trace"
 )
 
 func Wrap(store types.Store) types.Store {
@@ -42,7 +44,15 @@ func (s *StoreWrapper) List(apiContext *types.APIContext, schema *types.Schema, 
 		return nil, err
 	}
 
-	return apiContext.FilterList(opts, schema, data), nil
+	listTrace := trace.New("StoreWrapper List", trace.Field{Key: "resource", Value: schema.PluralName})
+	if parse.NeedForceTrace(apiContext) {
+		defer listTrace.Log()
+	}
+
+	result := apiContext.FilterList(opts, schema, data)
+	listTrace.Step("Completed FilterList", trace.Field{Key: "list-len", Value: len(result)})
+
+	return result, nil
 }
 
 func (s *StoreWrapper) Watch(apiContext *types.APIContext, schema *types.Schema, opt *types.QueryOptions) (chan map[string]interface{}, error) {

@@ -4,13 +4,13 @@ import (
 	"context"
 	ejson "encoding/json"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rancher/norman/httperror"
 	"github.com/rancher/norman/objectclient/dynamic"
+	"github.com/rancher/norman/parse"
 	"github.com/rancher/norman/pkg/broadcast"
 	"github.com/rancher/norman/restwatch"
 	"github.com/rancher/norman/types"
@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
 	restclientwatch "k8s.io/client-go/rest/watch"
+	"k8s.io/utils/trace"
 )
 
 var (
@@ -148,11 +149,6 @@ func (s *Store) getUser(apiContext *types.APIContext) string {
 }
 
 func (s *Store) doAuthed(apiContext *types.APIContext, request *rest.Request) rest.Result {
-	start := time.Now()
-	defer func() {
-		logrus.Tracef("GET: %v, %v", time.Now().Sub(start), s.resourcePlural)
-	}()
-
 	for _, header := range authHeaders {
 		request.SetHeader(header, apiContext.Request.Header[http.CanonicalHeaderKey(header)]...)
 	}
@@ -164,17 +160,19 @@ func (s *Store) doAuthed(apiContext *types.APIContext, request *rest.Request) re
 		}
 	}
 
-	enableTrace := strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
-		strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
+	enableTrace := parse.NeedForceTrace(apiContext)
 	httpstatResult := &httpstat.Result{}
 	reqCtx := apiContext.Request.Context()
+	singleTrace := trace.New("SingleResult",
+		trace.Field{Key: "url", Value: request.URL().String()},
+		trace.Field{Key: "method", Value: apiContext.Request.Method})
 	if enableTrace {
+		defer singleTrace.Log()
 		reqCtx = httpstat.WithHTTPStat(apiContext.Request.Context(), httpstatResult)
 	}
 	result := request.Do(reqCtx)
 	if enableTrace {
-		httpstatResult.End(time.Now())
-		logrus.Tracef("SingleResult httpstat: %+v", httpstatResult)
+		singleTrace.Step("SingleResult HTTPStat", trace.Field{Key: "result", Value: httpstatResult})
 	}
 	return result
 }
@@ -237,37 +235,44 @@ func (s *Store) Context() types.StorageContext {
 func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *types.QueryOptions) ([]map[string]interface{}, error) {
 	result := []map[string]interface{}{}
 
+	listTrace := trace.New("ProxyStore List", trace.Field{Key: "resource", Value: s.resourcePlural})
+	enableTrace := parse.NeedForceTrace(apiContext)
+	if logrus.IsLevelEnabled(logrus.TraceLevel) || enableTrace {
+		defer listTrace.Log()
+	}
+
 	// if there are no namespaces field in options, a single request is made
 	if opt == nil || opt.Namespaces == nil {
 		ns := getNamespace(apiContext, opt)
-		resultList := s.getListStruct()
+		resultList := s.getListStruct(enableTrace)
 
 		err := s.retryList(ns, apiContext, resultList)
 		if err != nil {
 			return nil, err
 		}
+		listTrace.Step("Completed Single NS RetryList")
 
 		collectionResults, _ := s.collectionFromInternal(resultList, apiContext, schema)
 		result = append(result, collectionResults...)
 	} else {
-		var (
-			errGroup errgroup.Group
-			mux      sync.Mutex
-		)
+		var mux sync.Mutex
+		errGroup, _ := errgroup.WithContext(apiContext.Request.Context())
 
 		allNS := opt.Namespaces
 		for _, ns := range allNS {
 			nsCopy := ns
 			errGroup.Go(func() error {
-				resultList := s.getListStruct()
+				resultList := s.getListStruct(enableTrace)
 
 				err := s.retryList(nsCopy, apiContext, resultList)
 				if err != nil {
 					return err
 				}
+				listTrace.Step("Completed Multi-ns RetryList", trace.Field{Key: "namespace", Value: nsCopy})
+
+				collectionResults, _ := s.collectionFromInternal(resultList, apiContext, schema)
 
 				mux.Lock()
-				collectionResults, _ := s.collectionFromInternal(resultList, apiContext, schema)
 				result = append(result, collectionResults...)
 				mux.Unlock()
 
@@ -278,8 +283,13 @@ func (s *Store) List(apiContext *types.APIContext, schema *types.Schema, opt *ty
 			return nil, err
 		}
 	}
+	listTrace.Step("Completed Internal Collection", trace.Field{Key: "list-len", Value: len(result)})
 
-	return apiContext.AccessControl.FilterList(apiContext, schema, result, s.authContext), nil
+	filtered := apiContext.AccessControl.FilterList(apiContext, schema, result, s.authContext)
+
+	listTrace.Step("Completed FilterList")
+
+	return filtered, nil
 }
 
 func (s *Store) retryList(namespace string, apiContext *types.APIContext, resultList runtime.Object) error {
@@ -288,22 +298,27 @@ func (s *Store) retryList(namespace string, apiContext *types.APIContext, result
 		return err
 	}
 
+	req := s.common(namespace, k8sClient.Get())
+	if parse.NeedRawQuery(apiContext) {
+		if options, _ := getListOption(apiContext.Request); options != nil {
+			req.VersionedParams(options, metav1.ParameterCodec)
+		}
+	}
+	enableTrace := parse.NeedForceTrace(apiContext)
+	reqCtx := apiContext.Request.Context()
+
 	for i := 0; i < 3; i++ {
-		req := s.common(namespace, k8sClient.Get())
-		start := time.Now()
-		enableTrace := strings.EqualFold(os.Getenv("PANDARIA_NORMAN_GET_TRACE"), "true") ||
-			strings.EqualFold(apiContext.Request.URL.Query().Get("httptrace"), "true")
-		reqCtx := apiContext.Request.Context()
 		result := &httpstat.Result{}
+		listTrace := trace.New("Kubernetes RetryList", trace.Field{Key: "url", Value: req.URL().String()})
 		if enableTrace {
+			defer listTrace.Log()
 			reqCtx = httpstat.WithHTTPStat(apiContext.Request.Context(), result)
 		}
 		err = req.Do(reqCtx).Into(resultList)
 		if enableTrace {
 			result.End(time.Now())
-			logrus.Tracef("LIST httpstat: %+v", result)
+			listTrace.Step("RetryList HTTPStat", trace.Field{Key: "result", Value: result})
 		}
-		logrus.Tracef("LIST: %v, %v", time.Now().Sub(start), s.resourcePlural)
 		if err != nil {
 			if i < 2 && strings.Contains(err.Error(), "Client.Timeout exceeded") {
 				logrus.Infof("Error on LIST %v: %v. Attempt: %v. Retrying", s.resourcePlural, err, i+1)
@@ -587,6 +602,17 @@ func getDeleteOption(req *http.Request) (*metav1.DeleteOptions, error) {
 	return options, nil
 }
 
+func getListOption(req *http.Request) (*metav1.ListOptions, error) {
+	options := &metav1.ListOptions{}
+	query := req.URL.Query()
+	query.Del("limit") // skip limit param to k8s api call
+	if err := metav1.Convert_url_Values_To_v1_ListOptions(&query, options, nil); err != nil {
+		logrus.Warnf("Failed to getListOption: %v", err)
+		return nil, err
+	}
+	return options, nil
+}
+
 func (s *Store) common(namespace string, req *rest.Request) *rest.Request {
 	prefix := append([]string{}, s.prefix...)
 	if s.group != "" {
@@ -616,7 +642,14 @@ func (s *Store) fromInternal(apiContext *types.APIContext, schema *types.Schema,
 
 // getListStruct returns a runtime object for storing results from list requests.  If the Store's scheme does not return
 // a type for the resource associated with the store, a generic type will be used.
-func (s *Store) getListStruct() runtime.Object {
+func (s *Store) getListStruct(verbose bool) runtime.Object {
+	if parse.DisabledTyper() {
+		if verbose {
+			logrus.Infof("Disable typer as PANDARIA_NORMAN_DISABLE_TYPER=true [%sList]", s.kind)
+		}
+		return new(unstructured.UnstructuredList)
+	}
+
 	// try to find the list type for this store
 	obj, err := s.typer.New(schema.GroupVersionKind{
 		Group:   s.group,
@@ -625,7 +658,9 @@ func (s *Store) getListStruct() runtime.Object {
 	})
 	// if we cannot get the specific type default to a generic parser
 	if err != nil {
-		logrus.Debugf("Falling back to generic list type for [%s]: %v", s.kind, err)
+		if verbose {
+			logrus.Infof("Falling back to generic list type for [%sList]: %v", s.kind, err)
+		}
 		return new(unstructured.UnstructuredList)
 	}
 
@@ -636,15 +671,22 @@ func (s *Store) getListStruct() runtime.Object {
 func (s *Store) collectionFromInternal(list runtime.Object, apiContext *types.APIContext, schema *types.Schema) ([]map[string]interface{}, error) {
 	var ul unstructured.UnstructuredList
 
+	convertTrace := trace.New("ProxyStore CollectionFromInternal")
+	if parse.NeedForceTrace(apiContext) {
+		defer convertTrace.Log()
+	}
+
 	err := s.typer.Convert(list, &ul, nil)
 	if err != nil {
 		return nil, err
 	}
+	convertTrace.Step("Completed Typer Convert")
 
 	results := make([]map[string]interface{}, len(ul.Items))
 	for i := range ul.Items {
 		results[i] = s.fromInternal(apiContext, schema, ul.Items[i].Object)
 	}
+	convertTrace.Step("Completed Mapper FromInternal")
 
 	return results, nil
 }
