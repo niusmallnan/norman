@@ -280,6 +280,7 @@ func (g *genericController) run(ctx context.Context, threadiness int) {
 	defer utilruntime.HandleCrash()
 	defer g.queue.ShutDown()
 
+	logrus.Infof("Starting %s controller", g.name)
 	for i := 0; i < threadiness; i++ {
 		go wait.Until(g.runWorker, time.Second, ctx.Done())
 	}
