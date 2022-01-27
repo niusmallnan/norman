@@ -1,11 +1,12 @@
 module github.com/rancher/norman
 
-go 1.12
+go 1.16
 
 require (
 	github.com/ghodss/yaml v1.0.0
 	github.com/gorilla/websocket v1.4.0
 	github.com/imdario/mergo v0.3.7 // indirect
+	github.com/json-iterator/go v1.1.9
 	github.com/maruel/panicparse v0.0.0-20171209025017-c0182c169410
 	github.com/maruel/ut v1.0.0 // indirect
 	github.com/matryer/moq v0.0.0-20200607124540-4638a53893e6
@@ -24,4 +25,5 @@ require (
 	k8s.io/apimachinery v0.18.8
 	k8s.io/client-go v0.18.8
 	k8s.io/gengo v0.0.0-20200114144118-36b2048a9120
+	k8s.io/utils v0.0.0-20200324210504-a9aa75ae1b89
 )
