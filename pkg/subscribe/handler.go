@@ -157,6 +157,11 @@ func streamStore(ctx context.Context, eg *errgroup.Group, apiContext *types.APIC
 		events, err := schema.Store.Watch(apiContext, schema, &opts)
 		if err != nil || events == nil {
 			if err != nil {
+				apiError, ok := err.(*httperror.APIError)
+				if ok && apiError.Code == httperror.NotFound {
+					logrus.Tracef("skip on subscribe %s as CRD not found", schema.ID)
+					return nil
+				}
 				logrus.Errorf("failed on subscribe %s: %v", schema.ID, err)
 			}
 			return err
